@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-
 pragma solidity ^0.8.4;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
@@ -15,8 +14,14 @@ import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 // ./interfaces/KeeperCompatibleInterface.sol
 import "@chainlink/contracts/src/v0.8/KeeperCompatible.sol";
 
+import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
 
-contract BullBear is ERC721, ERC721Enumerable, ERC721URIStorage, Ownable, KeeperCompatibleInterface  {
+// Dev imports. This only works on a local dev network
+// and will not work on any test or main livenets.
+import "hardhat/console.sol";
+
+contract BullBear is ERC721, ERC721Enumerable, ERC721URIStorage, Ownable, KeeperCompatibleInterface, VRFConsumerBaseV2 {
     using Counters for Counters.Counter;
 
     Counters.Counter private _tokenIdCounter;
@@ -25,6 +30,18 @@ contract BullBear is ERC721, ERC721Enumerable, ERC721URIStorage, Ownable, Keeper
 
     AggregatorV3Interface public priceFeed;
     int256 public currentPrice;
+
+    // VRF
+    VRFCoordinatorV2Interface COORDINATOR;
+    uint256[] public s_randomWords;
+    uint256 public s_requestId;
+    uint32 callbackGasLimit = 100000;
+    uint64 s_subscriptionId;   // Your subscription ID.
+    uint16 requestConfirmations = 3;  // The default is 3, but you can set this higher.
+    uint32 numWords = 2;  // Cannot exceed VRFCoordinatorV2.MAX_NUM_WORDS.
+    // see https://docs.chain.link/docs/vrf-contracts/#configurations
+    bytes32 keyHash = 0xd89b2bf150e3b9e13446986e571fb9cab24b13cea0a43ea20a6049a85cc807cc;
+    address vrfCoordinator = 0x6168499c0cFfCaCD319c818142124B7A15E857ab;
 
     // IPFS URIs for the dynamic nft graphics/metadata.
     // NOTE: These connect to my IPFS Companion node.
@@ -42,7 +59,7 @@ contract BullBear is ERC721, ERC721Enumerable, ERC721URIStorage, Ownable, Keeper
 
     event TokensUpdated(string marketTrend);
 
-    constructor(uint updateInterval, address _priceFeed) ERC721("Bull&Bear", "BBTK") {
+    constructor(uint updateInterval, address _priceFeed, uint64 subscriptionId) ERC721("Bull&Bear", "BBTK") VRFConsumerBaseV2(vrfCoordinator) {
         interval = updateInterval;
         lastTimeStamp = block.timestamp;
 
@@ -50,6 +67,8 @@ contract BullBear is ERC721, ERC721Enumerable, ERC721URIStorage, Ownable, Keeper
         priceFeed = AggregatorV3Interface(_priceFeed);
         currentPrice = getLatestPrice();
 
+        COORDINATOR = VRFCoordinatorV2Interface(vrfCoordinator);
+        s_subscriptionId = subscriptionId;
     }
 
     function safeMint(address to) public {
@@ -63,8 +82,10 @@ contract BullBear is ERC721, ERC721Enumerable, ERC721URIStorage, Ownable, Keeper
         _safeMint(to, tokenId);
 
         // Default to a bull NFT
-        string memory defaultUri = bullUrisIpfs[0];
+        string memory defaultUri = bullUrisIpfs[s_randomWords[0]%3];
         _setTokenURI(tokenId, defaultUri);
+
+        console.log("DONE!!! minted token ", tokenId, " and assigned token url: ", defaultUri);
     }
 
     function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory /*performData*/){
@@ -85,25 +106,25 @@ contract BullBear is ERC721, ERC721Enumerable, ERC721URIStorage, Ownable, Keeper
             }
 
             currentPrice = latestPrice;
+        } else {
+            console.log("INTERVAL NOT UP!");
+            return;
         }
     }
 
     function getLatestPrice() public view returns(int256){
-        (,
-        int price,
-        ,
-        ,) = priceFeed.latestRoundData();
+        (, int price,,,) = priceFeed.latestRoundData();
         return price;
     }
 
     function updateAllTokenUris(string memory trend) internal{
         if(compareStrings("bears", trend)){
             for(uint i=0; i< _tokenIdCounter.current(); i++){
-                _setTokenURI(i,bearUrisIpfs[0]);
+                _setTokenURI(i,bearUrisIpfs[s_randomWords[0]%3]);
             }
         }else {
             for(uint i=0; i< _tokenIdCounter.current(); i++){
-                _setTokenURI(i,bullUrisIpfs[0]);
+                _setTokenURI(i,bullUrisIpfs[s_randomWords[0]%3]);
             }
         }
 
@@ -120,6 +141,22 @@ contract BullBear is ERC721, ERC721Enumerable, ERC721URIStorage, Ownable, Keeper
 
     function compareStrings(string memory a, string memory b) internal pure returns (bool){
         return keccak256(abi.encodePacked(a)) == keccak256(abi.encodePacked(b));
+    }
+
+    // Assumes the subscription is funded sufficiently.
+    function requestRandomWords() external onlyOwner {
+        // Will revert if subscription is not set and funded.
+        s_requestId = COORDINATOR.requestRandomWords(
+        keyHash,
+        s_subscriptionId,
+        requestConfirmations,
+        callbackGasLimit,
+        numWords
+        );
+    }
+
+    function fulfillRandomWords(uint256, /* requestId */ uint256[] memory randomWords) internal override {
+        s_randomWords = randomWords;
     }
 
     // The following functions are overrides required by Solidity.
@@ -155,5 +192,4 @@ contract BullBear is ERC721, ERC721Enumerable, ERC721URIStorage, Ownable, Keeper
     {
         return super.supportsInterface(interfaceId);
     }
-
 }
